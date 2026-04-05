@@ -3,6 +3,8 @@ from openai import OpenAI, RateLimitError, OpenAIError
 from dotenv import load_dotenv
 import os
 from pathlib import Path
+import re
+from datetime import datetime
 
 # Load API key from .env file
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
@@ -80,32 +82,115 @@ def generate_fallback_analysis(conversation: str) -> str:
 The conversation captures the customer issue but misses empathetic handling and a constructive resolution path.
 """
 
+
+def extract_scores(result_text: str) -> tuple[int | None, int | None, int | None]:
+    customer_match = re.search(r"Customer Sentiment:\s*(\d+)\/10", result_text, re.IGNORECASE)
+    agent_match = re.search(r"Agent Performance:\s*(\d+)\/10", result_text, re.IGNORECASE)
+    overall_match = re.search(r"Overall Experience:\s*(\d+)\/10", result_text, re.IGNORECASE)
+
+    customer_score = int(customer_match.group(1)) if customer_match else None
+    agent_score = int(agent_match.group(1)) if agent_match else None
+    overall_score = int(overall_match.group(1)) if overall_match else None
+    return customer_score, agent_score, overall_score
+
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
     page_title="ConvoLens",
     page_icon="🔍",
-    layout="centered"
+    layout="wide"
 )
 
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.5rem; padding-bottom: 1rem;}
+    .hero-title {font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem;}
+    .hero-sub {color: #6b7280; margin-top: 0;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+if "conversation_input" not in st.session_state:
+    st.session_state.conversation_input = ""
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = ""
+
+sample_conversation = """Customer: Hi, my order hasn't arrived yet and it's been 2 weeks.
+Agent: I'm really sorry about that delay. Let me check this right away.
+Customer: I don't have my order number with me.
+Agent: No worries—can I use your email address to find it?
+Customer: yes, it's sam@email.com
+Agent: Thanks. I found it and escalated it with shipping. You'll get an update within 24 hours."""
+
+with st.sidebar:
+    st.header("⚙️ Analysis Settings")
+    temperature = st.slider("Creativity", min_value=0.0, max_value=1.0, value=0.7, step=0.1)
+    max_tokens = st.select_slider("Report Length", options=[500, 700, 900, 1000, 1200], value=1000)
+    st.caption("These settings apply when OpenAI is available.")
+
+    st.divider()
+    st.subheader("🧪 Quick Start")
+    if st.button("Load Sample Conversation", use_container_width=True):
+        st.session_state.conversation_input = sample_conversation
+    if st.button("Clear Conversation", use_container_width=True):
+        st.session_state.conversation_input = ""
+        st.session_state.analysis_result = ""
+
 # ── Header ────────────────────────────────────────────────────
-st.title("🔍 ConvoLens")
-st.subheader("AI-Powered Conversation Analyzer")
-st.write("Paste any conversation below — customer support, sales call, chat transcript — and get instant AI analysis.")
+left_col, right_col = st.columns([3, 1])
+with left_col:
+    st.markdown('<div class="hero-title">🔍 ConvoLens</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="hero-sub">AI-powered conversation analyzer for customer support, sales, and chat transcripts.</p>',
+        unsafe_allow_html=True,
+    )
+with right_col:
+    st.metric("Version", "v1.1")
+    st.metric("Status", "Ready")
 
 st.divider()
 
-# ── Input ─────────────────────────────────────────────────────
-conversation = st.text_area(
-    label="Paste your conversation here:",
-    placeholder="""Example:
-Customer: Hi, my order hasn't arrived yet and it's been 2 weeks.
+input_col, result_col = st.columns([1, 1])
+
+with input_col:
+    st.subheader("📝 Conversation Input")
+    st.caption("Paste a full dialogue with clear speaker labels (e.g., Customer:, Agent:).")
+
+    conversation = st.text_area(
+        label="Conversation",
+        label_visibility="collapsed",
+        key="conversation_input",
+        placeholder="""Customer: Hi, my order hasn't arrived yet and it's been 2 weeks.
 Agent: What's your order number?
 Customer: I don't have it handy.
 Agent: I can't help without it. Goodbye.""",
-    height=250
-)
+        height=320,
+    )
 
-analyze_btn = st.button("🔍 Analyze Conversation", use_container_width=True)
+    analyze_btn = st.button("🔍 Analyze Conversation", use_container_width=True, type="primary")
+    st.caption(f"Characters: {len(conversation):,}")
+
+with result_col:
+    st.subheader("📊 Analysis Results")
+    if st.session_state.analysis_result:
+        customer_score, agent_score, overall_score = extract_scores(st.session_state.analysis_result)
+        score_cols = st.columns(3)
+        score_cols[0].metric("Customer", f"{customer_score}/10" if customer_score is not None else "—")
+        score_cols[1].metric("Agent", f"{agent_score}/10" if agent_score is not None else "—")
+        score_cols[2].metric("Overall", f"{overall_score}/10" if overall_score is not None else "—")
+
+        st.markdown(st.session_state.analysis_result)
+        st.download_button(
+            "⬇️ Download Report",
+            data=st.session_state.analysis_result,
+            file_name=f"convolens_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    else:
+        st.info("Run an analysis to see results here.")
 
 # ── Analysis ──────────────────────────────────────────────────
 if analyze_btn:
@@ -120,7 +205,6 @@ if analyze_btn:
             client = OpenAI(api_key=api_key)
 
         with st.spinner("Analyzing conversation..."):
-
             prompt = f"""
 You are an expert communication analyst. Analyze the following conversation and provide a structured report.
 
@@ -154,10 +238,10 @@ Provide your analysis in exactly this format:
                         model="gpt-3.5-turbo",
                         messages=[
                             {"role": "system", "content": "You are an expert communication analyst who helps businesses improve their customer interactions."},
-                            {"role": "user", "content": prompt}
+                            {"role": "user", "content": prompt},
                         ],
-                        temperature=0.7,
-                        max_tokens=1000
+                        temperature=temperature,
+                        max_tokens=max_tokens,
                     )
                     result = response.choices[0].message.content
                 except RateLimitError:
@@ -167,14 +251,10 @@ Provide your analysis in exactly this format:
                     st.warning(f"OpenAI API error ({exc}). Showing offline fallback analysis instead.")
                     result = generate_fallback_analysis(conversation)
 
-        # ── Display Results ────────────────────────────────────
-        st.divider()
-        st.subheader("📊 Analysis Results")
-        st.markdown(result)
-
-        st.divider()
-        st.success("✅ Analysis complete! Copy or screenshot your results above.")
+        st.session_state.analysis_result = result
+        st.success("✅ Analysis complete! Results updated.")
+        st.rerun()
 
 # ── Footer ────────────────────────────────────────────────────
 st.divider()
-st.caption("Built by Adedamola Olayefun · ConvoLens v1.0 · Powered by OpenAI")
+st.caption("Built by Adedamola Olayefun · ConvoLens v1.1 · Powered by OpenAI")
